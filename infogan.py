@@ -10,7 +10,7 @@ wgan_alpha = 5.0e-4
 wgan_c = 0.01
 
 # InfoGAN extra hyperparameters
-infogan_lambda = 0.1
+infogan_lambda = 0.001
 cdim = 1
 
 # parameters of our true distribution
@@ -55,7 +55,7 @@ def main():
 		q_mean = tf.layers.dense(c_headless, cdim)
 		q_std = tf.Variable(tf.ones((cdim,)))
 		q = tf.distributions.Normal(loc=q_mean, scale=q_std)
-		g_infogan_reward = q.log_prob(g_in_c) 
+		g_infogan_reward = tf.reduce_mean(tf.layers.flatten(q.log_prob(g_in_c)))
 
 	with tf.variable_scope("loss"):
 		c_reward = tf.reduce_mean(c_real) - tf.reduce_mean(c_fake) + infogan_lambda * g_infogan_reward

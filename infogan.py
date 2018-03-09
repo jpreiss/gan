@@ -1,8 +1,10 @@
 import numpy as np
 import tensorflow as tf
+import matplotlib.pyplot as plt
+from gaussian_mixture import GaussianMixture
 
-hidden_sz = 32
-batch_sz = 64
+hidden_sz = 64
+batch_sz = 128
 critic_batches = 4
 
 # Wasserstein GAN extra hyperparameters
@@ -10,7 +12,7 @@ wgan_alpha = 5.0e-4
 wgan_c = 0.01
 
 # InfoGAN extra hyperparameters
-infogan_lambda = 0.001
+infogan_lambda = 0.00025
 cdim = 1
 
 # parameters of our true distribution
@@ -18,7 +20,7 @@ xdim = 2
 n_gaussians_mixed = 4
 
 # generic parameters
-zdim = 2
+zdim = 8
 
 def clip_fn(x):
 	return tf.clip_by_value(x, -wgan_c, wgan_c)
@@ -35,6 +37,7 @@ def critic(x, dropout_keep, reuse):
 		return c_out, dropout_keep, c_fc2
 
 def main():
+	np.random.seed(100)
 
 	with tf.variable_scope("generator"):
 		g_in_z = tf.placeholder(dtype=tf.float32, shape=[None, zdim])
@@ -42,6 +45,7 @@ def main():
 		g_in = tf.concat([g_in_z, g_in_c], axis=1)
 		g_fc1 = tf.layers.dense(g_in,  hidden_sz, activation=tf.nn.relu)
 		g_fc2 = tf.layers.dense(g_fc1, hidden_sz, activation=tf.nn.relu)
+		#g_fc3 = tf.layers.dense(g_fc2, hidden_sz, activation=tf.nn.relu)
 		g_out = tf.layers.dense(g_fc2, xdim)
 
 	c_keep = tf.placeholder(dtype=tf.float32, shape=())
@@ -53,13 +57,16 @@ def main():
 
 	with tf.variable_scope("q_c"):
 		q_mean = tf.layers.dense(c_headless, cdim)
-		q_std = tf.Variable(tf.ones((cdim,)))
-		q = tf.distributions.Normal(loc=q_mean, scale=q_std)
-		g_infogan_reward = tf.reduce_mean(tf.layers.flatten(q.log_prob(g_in_c)))
+		#q_std = tf.ones((cdim,))
+		#q = tf.distributions.Normal(loc=q_mean, scale=q_std)
+		#infogan_reward = tf.reduce_mean(tf.layers.flatten(q.log_prob(g_in_c)))
+		infogan_reward = -infogan_lambda * tf.reduce_mean(tf.reduce_sum((g_in_c - q_mean)**2, axis=1))
 
 	with tf.variable_scope("loss"):
-		c_reward = tf.reduce_mean(c_real) - tf.reduce_mean(c_fake) + infogan_lambda * g_infogan_reward
-		g_reward = tf.reduce_mean(c_fake) + infogan_lambda * g_infogan_reward
+		c_reward_wasserstein = tf.reduce_mean(c_real) - tf.reduce_mean(c_fake)
+		c_reward = c_reward_wasserstein + infogan_reward
+		g_reward_wasserstein = tf.reduce_mean(c_fake)
+		g_reward = g_reward_wasserstein + infogan_reward
 
 	vars = tf.trainable_variables()
 
@@ -68,49 +75,63 @@ def main():
 	c_step = tf.Variable(0, name="c_step", trainable=False)
 	c_optimize = c_adam.minimize(-c_reward, global_step=c_step, var_list=c_vars)
 
-	g_vars = [v for v in vars if v.name.startswith("generator") or v.name.startswith("q_c")]
+	g_vars = [v for v in vars if v.name.startswith("generator")]
 	g_adam = tf.train.RMSPropOptimizer(wgan_alpha)
 	g_step = tf.Variable(0, name="g_step", trainable=False)
 	g_optimize = g_adam.minimize(-g_reward, global_step=g_step, var_list=g_vars)
 
-	def random_gaussian(dim):
-		randn = np.random.normal
-		mean = 3*randn(size=dim)
-		cov_chol = randn(size=(dim,dim))
-		cov = np.matmul(cov_chol.T, cov_chol)
-		# make sure it's not too skinny
-		w, v = np.linalg.eigh(cov)
-		w += 0.1
-		cov = np.matmul(np.matmul(v, np.diag(w)), v.T)
-		return mean, cov
+	lim = 12
+	gm = GaussianMixture(xdim, n_gaussians_mixed, 0.8 * lim)
 
-	gaussians = [random_gaussian(xdim) for _ in range(n_gaussians_mixed)]
+	np.random.seed(420)
 
 	#tf_gaussians = [tf.distributions.Normal(loc=m, scale=np.diag(c).flat)
 		#for m, c in gaussians]
 	#density_in = tf.placeholder(dtype=tf.float32, shape=[None]+input_shape)
 	#true_density = tf.reduce_sum([g.prob(density_in) for g in tf_gaussians]) / float(n_mix)
 
-	def sample(N, i=None):
-		if i is None:
-			n = N // len(gaussians)
-			assert n * len(gaussians) == N
-			return np.vstack(
-				np.random.multivariate_normal(mu, cov, size=n)
-					for mu, cov in gaussians)
-		else:
-			mu, cov = gaussians[i]
-			return np.random.multivariate_normal(mu, cov, size=N)
+	# for printing
+	rews = [c_reward, g_reward, infogan_reward]
+	rew_names = ["critic", "generator", "infogan"]
 
 	sess = tf.Session()
 	sess.run(tf.global_variables_initializer())
 
-	n_batches = 4000
+	def generator_feed(N):
+		g_latent_z = np.random.normal(size=(N, zdim))
+		g_latent_c = np.random.normal(size=(N, cdim))
+		return {
+			g_in_c : g_latent_c,
+			g_in_z : g_latent_z,
+		}
+
+	def plot():
+		n_plot = 1000
+
+		feed = generator_feed(n_plot)
+		g_sample = sess.run(g_out, feed_dict=feed)
+
+		xr, yr = gm.sample(n_plot).T
+		x, y = g_sample.T
+		c = feed[g_in_c]
+		cutoff = 2*np.std(c)
+		cnorm = 0.5 * ((c - np.mean(c) / cutoff) + 1.0)
+
+		plt.clf()
+		plt.scatter(xr, yr, c=(0.2, 0.2, 0.2), edgecolors='none')
+		plt.scatter(x, y, c=c, cmap="rainbow", edgecolors='none')
+		plt.xlim([-lim, lim])
+		plt.ylim([-lim, lim])
+		plt.show(block=False)
+		plt.pause(0.001)
+
+
+	n_batches = 40000
 	for b in range(n_batches):
 		# train the critic
 		for _ in range(critic_batches):
 			# generate real data
-			r_sample = sample(batch_sz)
+			r_sample = gm.sample(batch_sz)
 
 			# sample from generator
 			g_latent_z = np.random.normal(size=(batch_sz, zdim))
@@ -125,27 +146,28 @@ def main():
 			_, c_rew_value = sess.run([c_optimize, c_reward], feed_dict=feed)
 
 		# train the generator
-		g_latent_z = np.random.normal(size=(batch_sz, zdim))
-		g_latent_c = np.random.normal(size=(batch_sz, cdim))
-		feed = {
-			g_in_c : g_latent_c, 
-			g_in_z : g_latent_z,
+		feed = generator_feed(batch_sz)
+		feed.update({
 			c_keep: 1.0
-		}
+		})
 		_, g_sample, g_rew_value = sess.run(
 			[g_optimize, g_out, g_reward],
 			feed_dict=feed)
 
-	n_plot = 1000
-	g_latent_z = np.random.normal(size=(n_plot, zdim))
-	g_latent_c = np.random.normal(size=(n_plot, cdim))
-	feed = {
-		g_in_c : g_latent_c, 
-		g_in_z : g_latent_z,
-	}
-	g_sample = sess.run(g_out, feed_dict=feed)
-	np.set_printoptions(threshold=np.inf)
-	print(np.hstack([g_sample, g_latent_c]))
+		if b % 100 == 0:
+			feed = generator_feed(batch_sz)
+			feed.update({
+				c_in_real: r_sample,
+				c_keep: 1.0,
+			})
+			rew_vals = sess.run(rews, feed_dict=feed)
+			print("\nrewards:")
+			for name, val in zip(rew_names, rew_vals):
+				print("{: <10} = {:.5f}".format(name, val))
+			print()
+			plot()
+	
+	plt.show(block=True)
 
 
 main()

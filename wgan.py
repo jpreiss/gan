@@ -2,9 +2,10 @@ import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
 import time
+from gaussian_mixture import GaussianMixture
 
-hidden_sz = 128
-n_mix = 8
+hidden_sz = 64
+n_mix = 4
 
 # hyperparams on page 8 of WGAN paper
 alpha = 5.0e-4
@@ -27,6 +28,7 @@ def critic(x, keep, reuse):
 		return c_out, keep
 
 def main():
+	np.random.seed(100)
 
 	input_shape = [2]
 	latent_shape = [8]
@@ -61,30 +63,12 @@ def main():
 	g_optimize = g_adam.minimize(-g_reward, global_step=g_step,
 		var_list=[v for v in vars if v.name.startswith("generator")])
 
-	def random_gaussian(dim):
-		randn = np.random.normal
-		mean = 3*randn(size=dim)
-		cov_chol = randn(size=(dim,dim))
-		cov = np.matmul(cov_chol.T, cov_chol)
-		# make sure it's not too skinny
-		w, v = np.linalg.eigh(cov)
-		w += 0.1
-		cov = np.matmul(np.matmul(v, np.diag(w)), v.T)
-		return mean, cov
-
-	gaussians = [random_gaussian(input_shape[0]) for _ in range(n_mix)]
+	gm = GaussianMixture(input_shape[0], n_mix, 6.0)
 
 	#tf_gaussians = [tf.distributions.Normal(loc=m, scale=np.diag(c).flat)
 		#for m, c in gaussians]
 	#density_in = tf.placeholder(dtype=tf.float32, shape=[None]+input_shape)
 	#true_density = tf.reduce_sum([g.prob(density_in) for g in tf_gaussians]) / float(n_mix)
-
-	def sample(N):
-		n = N // len(gaussians)
-		assert n * len(gaussians) == N
-		return np.vstack(
-			np.random.multivariate_normal(mu, cov, size=n)
-				for mu, cov in gaussians)
 
 	sess = tf.Session()
 	sess.run(tf.global_variables_initializer())
@@ -103,7 +87,7 @@ def main():
 		#dsurface = sess.run(c_real, feed_dict={c_in_real: mesh, c_keep: 1.0})
 		#dsurface = dsurface.reshape(x.shape)
 
-		r_sample = sample(n_mix * 10000)
+		r_sample = gm.sample(n_mix * 10000)
 		r_hist, _, _ = np.histogram2d(r_sample[:,0], r_sample[:,1],
 			bins=res, range=[[-lim, lim], [-lim, lim]])
 
@@ -129,7 +113,7 @@ def main():
 		# train the critic
 		for _ in range(ncritic):
 			# generate real data
-			r_sample = sample(m)
+			r_sample = gm.sample(m)
 
 			# sample from generator
 			g_latent = np.random.normal(size=[m] + latent_shape)

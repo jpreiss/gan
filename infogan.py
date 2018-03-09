@@ -12,7 +12,7 @@ wgan_alpha = 5.0e-4
 wgan_c = 0.01
 
 # InfoGAN extra hyperparameters
-infogan_lambda = 0.00025
+infogan_lambda = 0.001
 cdim = 1
 
 # parameters of our true distribution
@@ -37,7 +37,7 @@ def critic(x, dropout_keep, reuse):
 		return c_out, dropout_keep, c_fc2
 
 def main():
-	np.random.seed(100)
+	np.random.seed(105)
 
 	with tf.variable_scope("generator"):
 		g_in_z = tf.placeholder(dtype=tf.float32, shape=[None, zdim])
@@ -108,16 +108,24 @@ def main():
 	def plot():
 		n_plot = 1000
 
+		plt.clf()
+		plt.hold(True)
+
+		n_grid = 100
+		t = np.linspace(-lim, lim, n_grid)
+		x, y = np.meshgrid(t, t)
+		xy = np.concatenate([x[:,:,None], y[:,:,None]], axis=2).reshape((-1, 2))
+		feed = {c_in_real: xy, c_keep: 1.0}
+		cval = sess.run(c_real, feed_dict=feed).reshape(x.shape)
+		plt.contourf(x, y, cval, 20, alpha=0.3, antialiased=True, cmap="bone")
+
 		feed = generator_feed(n_plot)
 		g_sample = sess.run(g_out, feed_dict=feed)
-
 		xr, yr = gm.sample(n_plot).T
 		x, y = g_sample.T
 		c = feed[g_in_c]
 		cutoff = 2*np.std(c)
 		cnorm = 0.5 * ((c - np.mean(c) / cutoff) + 1.0)
-
-		plt.clf()
 		plt.scatter(xr, yr, c=(0.2, 0.2, 0.2), edgecolors='none')
 		plt.scatter(x, y, c=c, cmap="rainbow", edgecolors='none')
 		plt.xlim([-lim, lim])
